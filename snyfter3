@@ -1,0 +1,17 @@
+#!/bin/bash
+
+# Snyfter3 launcher script
+# This script makes it easy to run Snyfter3 from anywhere
+
+SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+
+# Check if release binary exists
+if [ ! -f "$SCRIPT_DIR/target/release/snyfter3" ]; then
+    echo "Building Snyfter3 (first time setup)..."
+    cd "$SCRIPT_DIR"
+    cargo build --release
+    echo "Build complete!"
+fi
+
+# Run Snyfter3
+exec "$SCRIPT_DIR/target/release/snyfter3" "$@"

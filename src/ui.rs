@@ -2,7 +2,7 @@
 
 use anyhow::Result;
 use crossterm::{
-    cursor,
+    cursor::{self, Hide, Show},
     style::{self, Color, SetBackgroundColor, SetForegroundColor},
     terminal,
     execute,
@@ -52,12 +52,14 @@ impl UI {
         match app.mode {
             AppMode::Search => {
                 let search_len = app.search_query.width() as u16;
-                execute!(io::stdout(), cursor::MoveTo(9 + search_len, 0))?;
+                execute!(io::stdout(), cursor::Show, cursor::MoveTo(9 + search_len, 0))?;
             }
             AppMode::NoteEdit => {
-                // Position cursor in editor
-                // TODO: Calculate actual cursor position based on rope selection
-                execute!(io::stdout(), cursor::MoveTo(2, split_y + 2))?;
+                // Show cursor in editor at correct position
+                let (cursor_row, cursor_col) = app.editor.get_cursor_screen_position();
+                let actual_row = split_y + 2 + cursor_row as u16;
+                let actual_col = 1 + cursor_col as u16;
+                execute!(io::stdout(), cursor::Show, cursor::MoveTo(actual_col, actual_row))?;
             }
             _ => {
                 execute!(io::stdout(), cursor::Hide)?;

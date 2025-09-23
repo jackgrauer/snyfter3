@@ -210,6 +210,10 @@ impl App {
                 // Open code/tag manager
                 self.mode = AppMode::CodeManager;
             }
+            KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                // Delete selected note
+                self.delete_selected_note()?;
+            }
             _ => {}
         }
         Ok(())
@@ -328,6 +332,59 @@ impl App {
             self.selected_note = Some(note);
             self.unsaved_changes = false;
             self.status_message = "Note saved".to_string();
+        }
+        Ok(())
+    }
+
+    fn delete_selected_note(&mut self) -> Result<()> {
+        if !self.search_query.is_empty() && !self.search_results.is_empty() {
+            if self.selected_note_index < self.search_results.len() {
+                let result = &self.search_results[self.selected_note_index];
+                let id = result.id.clone();
+
+                // Delete from storage
+                self.notes.delete_note(&id)?;
+                // Delete from search index
+                self.search.delete_note(&id)?;
+
+                // Remove from search results
+                self.search_results.remove(self.selected_note_index);
+
+                // Adjust selected index if needed
+                if self.selected_note_index >= self.search_results.len() && self.selected_note_index > 0 {
+                    self.selected_note_index -= 1;
+                }
+
+                self.status_message = "Note deleted".to_string();
+            }
+        } else {
+            // Delete from all notes
+            let all_notes = self.notes.get_all_notes()?;
+            if self.selected_note_index < all_notes.len() {
+                let note = &all_notes[self.selected_note_index];
+                let id = note.id.clone();
+
+                // Delete from storage
+                self.notes.delete_note(&id)?;
+                // Delete from search index
+                self.search.delete_note(&id)?;
+
+                // Adjust selected index if needed
+                let new_count = self.notes.get_note_count();
+                if self.selected_note_index >= new_count && self.selected_note_index > 0 {
+                    self.selected_note_index -= 1;
+                }
+
+                // Clear selected note if it was the deleted one
+                if let Some(ref selected) = self.selected_note {
+                    if selected.id == id {
+                        self.selected_note = None;
+                        self.editor.set_text("");
+                    }
+                }
+
+                self.status_message = "Note deleted".to_string();
+            }
         }
         Ok(())
     }
