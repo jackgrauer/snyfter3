@@ -117,7 +117,7 @@ impl NoteStore {
         Ok(())
     }
 
-    pub fn get_note(&self, id: &str) -> Result<Option<Note>> {
+    pub fn get_note(&mut self, id: &str) -> Result<Option<Note>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, title, content, created_at, updated_at, tags, codes
              FROM notes WHERE id = ?1"

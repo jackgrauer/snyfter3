@@ -111,13 +111,8 @@ impl UI {
     }
 
     fn render_note_list(&self, app: &App, width: u16, start_y: u16, height: u16) -> Result<()> {
-        // Get notes to display
-        let notes = if app.search_query.is_empty() {
-            app.notes.get_all_notes()?
-        } else {
-            // Search results would go here
-            app.notes.search_notes(&app.search_query)?
-        };
+        // Display search results if searching, otherwise all notes
+        let display_height = height - 1;
 
         // Render list header
         execute!(
@@ -129,9 +124,10 @@ impl UI {
 
         print!("{:width$}", " NOTES", width = width as usize);
 
-        // Render notes
-        let display_height = height - 1;
-        for (i, note) in notes.iter().enumerate() {
+        // Render notes or search results
+        if !app.search_query.is_empty() && !app.search_results.is_empty() {
+            // Render search results
+            for (i, result) in app.search_results.iter().enumerate() {
             if i >= display_height as usize {
                 break;
             }
@@ -154,26 +150,80 @@ impl UI {
                 )?;
             }
 
-            // Format note line
-            let title = if note.title.width() > (width as usize - 4) {
-                format!("{}...", &note.title[..width as usize - 7])
-            } else {
-                note.title.clone()
-            };
+                // Format search result line with preview
+                let display_text = if result.score > 0.0 {
+                    format!("{} [{}]", result.title, (result.score * 100.0) as u32)
+                } else {
+                    result.title.clone()
+                };
 
-            print!(" {:<width$}", title, width = width as usize - 1);
+                let display = if display_text.width() > (width as usize - 4) {
+                    format!("{}...", &display_text.chars().take(width as usize - 7).collect::<String>())
+                } else {
+                    display_text
+                };
+
+                print!(" {:<width$}", display, width = width as usize - 1);
+            }
+
+            // Clear remaining lines
+            for i in app.search_results.len()..display_height as usize {
+                let y = start_y + 1 + i as u16;
+                execute!(
+                    io::stdout(),
+                    cursor::MoveTo(0, y),
+                    SetBackgroundColor(Color::Black),
+                )?;
+                print!("{:width$}", "", width = width as usize);
+            }
+        } else {
+            // Render all notes
+            let notes = app.notes.get_all_notes()?;
+            for (i, note) in notes.iter().enumerate() {
+                if i >= display_height as usize {
+                    break;
+                }
+
+                let y = start_y + 1 + i as u16;
+                execute!(io::stdout(), cursor::MoveTo(0, y))?;
+
+                // Highlight selected note
+                if i == app.selected_note_index {
+                    execute!(
+                        io::stdout(),
+                        SetBackgroundColor(Color::Rgb { r: 60, g: 60, b: 100 }),
+                        SetForegroundColor(Color::Rgb { r: 255, g: 255, b: 255 }),
+                    )?;
+                } else {
+                    execute!(
+                        io::stdout(),
+                        SetBackgroundColor(Color::Black),
+                        SetForegroundColor(Color::Rgb { r: 200, g: 200, b: 200 }),
+                    )?;
+                }
+
+                // Format note line
+                let title = if note.title.width() > (width as usize - 4) {
+                    format!("{}...", &note.title.chars().take(width as usize - 7).collect::<String>())
+                } else {
+                    note.title.clone()
+                };
+
+                print!(" {:<width$}", title, width = width as usize - 1);
+            }
+
+            // Clear remaining lines
+            for i in notes.len()..display_height as usize {
+                let y = start_y + 1 + i as u16;
+                execute!(
+                    io::stdout(),
+                    cursor::MoveTo(0, y),
+                    SetBackgroundColor(Color::Black),
+                )?;
+                print!("{:width$}", "", width = width as usize);
+            }
         }
 
-        // Clear remaining lines
-        for i in notes.len()..display_height as usize {
-            let y = start_y + 1 + i as u16;
-            execute!(
-                io::stdout(),
-                cursor::MoveTo(0, y),
-                SetBackgroundColor(Color::Black),
-            )?;
-            print!("{:width$}", "", width = width as usize);
-        }
 
         execute!(io::stdout(), style::ResetColor)?;
         Ok(())
@@ -203,12 +253,12 @@ impl UI {
             SetForegroundColor(Color::Rgb { r: 200, g: 200, b: 200 }),
         )?;
 
-        if let Some(ref note) = app.selected_note {
-            // Render with syntax highlighting for coded segments
-            let rope_string = app.rope.to_string();
-            let lines: Vec<&str> = rope_string.lines().collect();
+        if let Some(ref _note) = app.selected_note {
+            // Get visible lines from editor
+            let visible_lines = app.editor.get_visible_lines(height as usize - 1);
+            let (cursor_row, cursor_col) = app.editor.get_cursor_screen_position();
 
-            for (i, line) in lines.iter().enumerate() {
+            for (i, line) in visible_lines.iter().enumerate() {
                 if i >= height as usize - 1 {
                     break;
                 }
@@ -216,69 +266,54 @@ impl UI {
                 let y = start_y + 1 + i as u16;
                 execute!(io::stdout(), cursor::MoveTo(0, y))?;
 
-                // Check if this line contains coded segments
-                let line_start = app.rope.to_string()
-                    .lines()
-                    .take(i)
-                    .map(|l| l.len() + 1) // +1 for newline
-                    .sum::<usize>();
-
-                let line_end = line_start + line.len();
-
-                // Find codes that overlap with this line
-                let mut highlighted_ranges = Vec::new();
-                for code in &note.codes {
-                    if code.start_offset < line_end && code.end_offset > line_start {
-                        let start = code.start_offset.saturating_sub(line_start);
-                        let end = (code.end_offset - line_start).min(line.len());
-                        highlighted_ranges.push((start, end));
-                    }
-                }
-
-                // Render line with highlights
-                if highlighted_ranges.is_empty() {
-                    print!(" {:<width$}", line, width = width as usize - 1);
-                } else {
+                // For now, render without code highlights (will add later)
+                // Show cursor position
+                if app.mode == AppMode::NoteEdit && i == cursor_row {
+                    // Render line with cursor
                     print!(" ");
-                    let mut last_end = 0;
-
-                    for (start, end) in highlighted_ranges {
-                        // Print normal text before highlight
-                        if start > last_end {
-                            print!("{}", &line[last_end..start]);
+                    for (j, ch) in line.chars().enumerate() {
+                        if j == cursor_col {
+                            execute!(
+                                io::stdout(),
+                                SetBackgroundColor(Color::Rgb { r: 100, g: 100, b: 100 }),
+                                SetForegroundColor(Color::Rgb { r: 255, g: 255, b: 255 }),
+                            )?;
+                            print!("{}", ch);
+                            execute!(
+                                io::stdout(),
+                                SetBackgroundColor(Color::Black),
+                                SetForegroundColor(Color::Rgb { r: 200, g: 200, b: 200 }),
+                            )?;
+                        } else {
+                            print!("{}", ch);
                         }
-
-                        // Print highlighted text
+                    }
+                    // Show cursor at end of line if needed
+                    if cursor_col >= line.len() {
                         execute!(
                             io::stdout(),
-                            SetBackgroundColor(Color::Rgb { r: 100, g: 100, b: 50 }),
-                            SetForegroundColor(Color::Rgb { r: 255, g: 255, b: 200 }),
+                            SetBackgroundColor(Color::Rgb { r: 100, g: 100, b: 100 }),
                         )?;
-                        print!("{}", &line[start..end]);
+                        print!(" ");
                         execute!(
                             io::stdout(),
                             SetBackgroundColor(Color::Black),
-                            SetForegroundColor(Color::Rgb { r: 200, g: 200, b: 200 }),
                         )?;
-
-                        last_end = end;
                     }
-
-                    // Print remaining normal text
-                    if last_end < line.len() {
-                        print!("{}", &line[last_end..]);
-                    }
-
                     // Fill rest of line
-                    let printed = 1 + line.width();
+                    let printed = 1 + line.width() + if cursor_col >= line.len() { 1 } else { 0 };
                     if printed < width as usize {
                         print!("{:width$}", "", width = width as usize - printed);
                     }
+                } else {
+                    // Regular line rendering
+                    print!(" {:<width$}", line, width = width as usize - 1);
                 }
+
             }
 
             // Clear remaining lines
-            for i in lines.len()..height as usize - 1 {
+            for i in visible_lines.len()..height as usize - 1 {
                 let y = start_y + 1 + i as u16;
                 execute!(io::stdout(), cursor::MoveTo(0, y))?;
                 print!("{:width$}", "", width = width as usize);

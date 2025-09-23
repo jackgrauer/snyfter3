@@ -10,17 +10,19 @@ use crossterm::{
 };
 use std::io::{self, Write};
 use std::path::PathBuf;
-use helix_core::{Rope, Selection};
+use chrono;
 
 mod note_store;
 mod search_engine;
 mod ui;
 mod qda_codes;  // Qualitative data analysis codes/tags
+mod editor;
 
 use note_store::{Note, NoteStore};
-use search_engine::SearchEngine;
+use search_engine::{SearchEngine, SearchResult};
 use ui::UI;
 use qda_codes::CodeManager;
+use editor::TextEditor;
 
 #[derive(Parser, Debug)]
 #[command(name = "snyfter3", author, version, about)]
@@ -49,21 +51,20 @@ pub struct App {
     search: SearchEngine,
     codes: CodeManager,
     ui: UI,
+    editor: TextEditor,
 
     // Current state
     mode: AppMode,
     selected_note: Option<Note>,
     selected_note_index: usize,
     search_query: String,
-
-    // Text editing with Helix
-    rope: Rope,
-    selection: Selection,
+    search_results: Vec<SearchResult>,
 
     // Display state
     needs_redraw: bool,
     exit_requested: bool,
     status_message: String,
+    unsaved_changes: bool,
 
     // Split pane position (percentage of screen for note list)
     split_ratio: f32,  // 0.3 = 30% for list, 70% for editor
@@ -76,20 +77,29 @@ impl App {
         let codes = CodeManager::new(&notes_dir)?;
         let ui = UI::new()?;
 
+        // Load initial notes
+        let all_notes = notes.get_all_notes()?;
+
+        // Index all notes in search engine
+        for note in &all_notes {
+            search.index_note(&note.id, &note.title, &note.content, &note.tags)?;
+        }
+
         Ok(App {
             notes,
             search,
             codes,
             ui,
+            editor: TextEditor::new(),
             mode: AppMode::NoteList,
             selected_note: None,
             selected_note_index: 0,
             search_query: String::new(),
-            rope: Rope::new(),
-            selection: Selection::single(0, 0),
+            search_results: Vec::new(),
             needs_redraw: true,
             exit_requested: false,
-            status_message: String::new(),
+            status_message: String::from("Welcome to Snyfter3!"),
+            unsaved_changes: false,
             split_ratio: 0.3,
         })
     }
@@ -149,7 +159,8 @@ impl App {
             }
             KeyCode::Enter => {
                 // Perform search
-                self.search.search(&self.search_query)?;
+                self.search_results = self.search.search(&self.search_query)?;
+                self.status_message = format!("Found {} notes", self.search_results.len());
                 self.mode = AppMode::NoteList;
             }
             KeyCode::Backspace => {
@@ -158,7 +169,7 @@ impl App {
             KeyCode::Char(c) => {
                 self.search_query.push(c);
                 // Live search as you type (like NValt)
-                self.search.search(&self.search_query)?;
+                self.search_results = self.search.search(&self.search_query)?;
             }
             _ => {}
         }
@@ -220,10 +231,12 @@ impl App {
                 // Start highlighting for coding
                 self.mode = AppMode::Highlighting;
             }
-            // Text editing keys handled by Helix-core
+            // Text editing keys handled by editor module
             _ => {
-                // Handle text editing with helix-core
-                // ... (simplified for now)
+                if self.editor.handle_key(key.code, key.modifiers)? {
+                    self.unsaved_changes = true;
+                    self.status_message = "*modified*".to_string();
+                }
             }
         }
         Ok(())
@@ -259,27 +272,62 @@ impl App {
     }
 
     fn create_new_note(&mut self) -> Result<()> {
-        let note = self.notes.create_note("New Note", "")?;
+        // Save current note if there are unsaved changes
+        if self.unsaved_changes {
+            self.save_current_note()?;
+        }
+
+        let title = format!("Note {}", chrono::Utc::now().format("%Y-%m-%d %H:%M"));
+        let note = self.notes.create_note(&title, "")?;
+
+        // Index in search engine
+        self.search.index_note(&note.id, &note.title, &note.content, &note.tags)?;
+
         self.selected_note = Some(note);
-        self.rope = Rope::new();
+        self.editor.set_text("");
         self.mode = AppMode::NoteEdit;
+        self.unsaved_changes = false;
+        self.status_message = "New note created".to_string();
         Ok(())
     }
 
     fn load_selected_note(&mut self) -> Result<()> {
-        if let Some(note) = self.notes.get_note_by_index(self.selected_note_index)? {
+        // Save current note if there are unsaved changes
+        if self.unsaved_changes {
+            self.save_current_note()?;
+        }
+
+        // Get note from search results if searching, otherwise from all notes
+        let note = if !self.search_query.is_empty() && !self.search_results.is_empty() {
+            if self.selected_note_index < self.search_results.len() {
+                let result = &self.search_results[self.selected_note_index];
+                self.notes.get_note(&result.id)?
+            } else {
+                None
+            }
+        } else {
+            self.notes.get_note_by_index(self.selected_note_index)?
+        };
+
+        if let Some(note) = note {
             self.selected_note = Some(note.clone());
-            self.rope = Rope::from_str(&note.content);
-            self.selection = Selection::single(0, 0);
+            self.editor.set_text(&note.content);
+            self.unsaved_changes = false;
         }
         Ok(())
     }
 
     fn save_current_note(&mut self) -> Result<()> {
         if let Some(mut note) = self.selected_note.take() {
-            note.content = self.rope.to_string();
+            note.content = self.editor.get_text();
             self.notes.update_note(&note)?;
+
+            // Update search index
+            self.search.index_note(&note.id, &note.title, &note.content, &note.tags)?;
+
             self.selected_note = Some(note);
+            self.unsaved_changes = false;
+            self.status_message = "Note saved".to_string();
         }
         Ok(())
     }
