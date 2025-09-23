@@ -4,8 +4,8 @@
 use anyhow::Result;
 use clap::Parser;
 use crossterm::{
-    event::{self, Event, KeyCode, KeyEvent, KeyModifiers},
-    execute,
+    event::{self, Event, KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind, MouseButton, EnableMouseCapture, DisableMouseCapture},
+    execute, terminal,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
 use std::io::{self, Write};
@@ -66,8 +66,9 @@ pub struct App {
     status_message: String,
     unsaved_changes: bool,
 
-    // Split pane position (percentage of screen for note list)
-    split_ratio: f32,  // 0.3 = 30% for list, 70% for editor
+    // Split pane position (percentage of screen width for note list)
+    split_ratio: f32,  // 0.3 = 30% width for list, 70% for editor
+    dragging_divider: bool,  // Whether we're currently dragging the divider
 }
 
 impl App {
@@ -101,6 +102,7 @@ impl App {
             status_message: String::from("Welcome to Snyfter3!"),
             unsaved_changes: false,
             split_ratio: 0.3,
+            dragging_divider: false,
         })
     }
 
@@ -108,7 +110,7 @@ impl App {
         // Setup terminal
         enable_raw_mode()?;
         let mut stdout = io::stdout();
-        execute!(stdout, EnterAlternateScreen)?;
+        execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
 
         // Main event loop
         while !self.exit_requested {
@@ -120,15 +122,18 @@ impl App {
 
             // Handle input
             if event::poll(std::time::Duration::from_millis(50))? {
-                if let Event::Key(key) = event::read()? {
-                    self.handle_key(key).await?;
+                match event::read()? {
+                    Event::Key(key) => self.handle_key(key).await?,
+                    Event::Mouse(mouse) => self.handle_mouse(mouse)?,
+                    Event::Resize(_, _) => self.needs_redraw = true,
+                    _ => {}
                 }
             }
         }
 
         // Cleanup
+        execute!(stdout, DisableMouseCapture, LeaveAlternateScreen)?;
         disable_raw_mode()?;
-        execute!(stdout, LeaveAlternateScreen)?;
 
         Ok(())
     }
@@ -213,6 +218,17 @@ impl App {
             KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 // Delete selected note
                 self.delete_selected_note()?;
+            }
+            // Resize panes with keyboard
+            KeyCode::Char(',') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                // Make notes pane smaller
+                self.split_ratio = (self.split_ratio - 0.05).max(0.15);
+                self.needs_redraw = true;
+            }
+            KeyCode::Char('.') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                // Make notes pane larger
+                self.split_ratio = (self.split_ratio + 0.05).min(0.7);
+                self.needs_redraw = true;
             }
             _ => {}
         }
@@ -333,6 +349,80 @@ impl App {
             self.unsaved_changes = false;
             self.status_message = "Note saved".to_string();
         }
+        Ok(())
+    }
+
+    fn handle_mouse(&mut self, mouse: MouseEvent) -> Result<()> {
+        let (term_width, _term_height) = terminal::size()?;
+        let divider_x = (term_width as f32 * self.split_ratio) as u16;
+
+        match mouse.kind {
+            MouseEventKind::Down(MouseButton::Left) => {
+                // Check if clicking on divider (within 2 pixels)
+                if mouse.column >= divider_x.saturating_sub(1) && mouse.column <= divider_x + 1 {
+                    self.dragging_divider = true;
+                } else if mouse.column < divider_x {
+                    // Clicking in notes list
+                    // Calculate which note was clicked
+                    if mouse.row > 1 {  // Skip header
+                        let index = (mouse.row - 2) as usize;
+                        if !self.search_query.is_empty() && index < self.search_results.len() {
+                            self.selected_note_index = index;
+                            self.load_selected_note()?;
+                            self.needs_redraw = true;
+                        } else {
+                            let note_count = self.notes.get_note_count();
+                            if index < note_count {
+                                self.selected_note_index = index;
+                                self.load_selected_note()?;
+                                self.needs_redraw = true;
+                            }
+                        }
+                    }
+                } else {
+                    // Clicking in editor area
+                    if self.selected_note.is_some() {
+                        self.mode = AppMode::NoteEdit;
+                        self.needs_redraw = true;
+                    }
+                }
+            }
+            MouseEventKind::Drag(MouseButton::Left) => {
+                if self.dragging_divider {
+                    // Update split ratio based on mouse position
+                    self.split_ratio = (mouse.column as f32 / term_width as f32)
+                        .max(0.15)
+                        .min(0.7);
+                    self.needs_redraw = true;
+                }
+            }
+            MouseEventKind::Up(MouseButton::Left) => {
+                self.dragging_divider = false;
+            }
+            MouseEventKind::ScrollDown => {
+                // Scroll notes list down
+                let note_count = if !self.search_query.is_empty() {
+                    self.search_results.len()
+                } else {
+                    self.notes.get_note_count()
+                };
+                if self.selected_note_index < note_count.saturating_sub(1) {
+                    self.selected_note_index += 1;
+                    self.load_selected_note()?;
+                    self.needs_redraw = true;
+                }
+            }
+            MouseEventKind::ScrollUp => {
+                // Scroll notes list up
+                if self.selected_note_index > 0 {
+                    self.selected_note_index -= 1;
+                    self.load_selected_note()?;
+                    self.needs_redraw = true;
+                }
+            }
+            _ => {}
+        }
+
         Ok(())
     }
 

@@ -2,7 +2,7 @@
 
 use anyhow::Result;
 use crossterm::{
-    cursor::{self, Hide, Show},
+    cursor,
     style::{self, Color, SetBackgroundColor, SetForegroundColor},
     terminal,
     execute,
@@ -29,22 +29,25 @@ impl UI {
             cursor::MoveTo(0, 0),
         )?;
 
-        // Calculate split positions
-        let split_y = (height as f32 * app.split_ratio) as u16;
+        // Calculate split positions (left-right split)
+        let split_x = (width as f32 * app.split_ratio) as u16;
+        let editor_width = width.saturating_sub(split_x + 1);  // +1 for divider
 
-        // Render based on mode
-        match app.mode {
-            AppMode::Search => {
-                self.render_search_box(app, width)?;
-                self.render_note_list(app, width, 2, split_y)?;
-                self.render_editor(app, width, split_y + 1, height - split_y - 2)?;
-            }
-            _ => {
-                self.render_header(app, width)?;
-                self.render_note_list(app, width, 1, split_y)?;
-                self.render_editor(app, width, split_y + 1, height - split_y - 2)?;
-            }
+        // Render header across top
+        if app.mode == AppMode::Search {
+            self.render_search_box(app, width)?;
+        } else {
+            self.render_header(app, width)?;
         }
+
+        // Render note list on left
+        self.render_note_list(app, split_x, 1, height - 2)?;  // -2 for header and status
+
+        // Render divider
+        self.render_divider(split_x, 1, height - 2, app.dragging_divider)?;
+
+        // Render editor on right
+        self.render_editor(app, split_x + 1, editor_width, 1, height - 2)?;
 
         self.render_status_bar(app, width, height)?;
 
@@ -55,10 +58,11 @@ impl UI {
                 execute!(io::stdout(), cursor::Show, cursor::MoveTo(9 + search_len, 0))?;
             }
             AppMode::NoteEdit => {
-                // Show cursor in editor at correct position
+                // Show cursor in editor at correct position (right pane)
+                let split_x = (width as f32 * app.split_ratio) as u16;
                 let (cursor_row, cursor_col) = app.editor.get_cursor_screen_position();
-                let actual_row = split_y + 2 + cursor_row as u16;
-                let actual_col = 1 + cursor_col as u16;
+                let actual_row = 2 + cursor_row as u16;  // 2 for header and border
+                let actual_col = split_x + 1 + cursor_col as u16;  // +1 for divider
                 execute!(io::stdout(), cursor::Show, cursor::MoveTo(actual_col, actual_row))?;
             }
             _ => {
@@ -89,6 +93,26 @@ impl UI {
             style::ResetColor,
         )?;
 
+        Ok(())
+    }
+
+    fn render_divider(&self, x: u16, start_y: u16, height: u16, is_dragging: bool) -> Result<()> {
+        let color = if is_dragging {
+            Color::Rgb { r: 100, g: 150, b: 200 }
+        } else {
+            Color::Rgb { r: 60, g: 60, b: 60 }
+        };
+
+        for y in start_y..start_y + height {
+            execute!(
+                io::stdout(),
+                cursor::MoveTo(x, y),
+                SetForegroundColor(color),
+            )?;
+            print!("│");
+        }
+
+        execute!(io::stdout(), style::ResetColor)?;
         Ok(())
     }
 
@@ -231,11 +255,11 @@ impl UI {
         Ok(())
     }
 
-    fn render_editor(&self, app: &App, width: u16, start_y: u16, height: u16) -> Result<()> {
-        // Render editor border
+    fn render_editor(&self, app: &App, start_x: u16, width: u16, start_y: u16, height: u16) -> Result<()> {
+        // Render editor header
         execute!(
             io::stdout(),
-            cursor::MoveTo(0, start_y),
+            cursor::MoveTo(start_x, start_y),
             SetBackgroundColor(Color::Rgb { r: 30, g: 30, b: 30 }),
             SetForegroundColor(Color::Rgb { r: 150, g: 150, b: 150 }),
         )?;
@@ -266,7 +290,7 @@ impl UI {
                 }
 
                 let y = start_y + 1 + i as u16;
-                execute!(io::stdout(), cursor::MoveTo(0, y))?;
+                execute!(io::stdout(), cursor::MoveTo(start_x, y))?;
 
                 // For now, render without code highlights (will add later)
                 // Show cursor position
@@ -317,14 +341,14 @@ impl UI {
             // Clear remaining lines
             for i in visible_lines.len()..height as usize - 1 {
                 let y = start_y + 1 + i as u16;
-                execute!(io::stdout(), cursor::MoveTo(0, y))?;
+                execute!(io::stdout(), cursor::MoveTo(start_x, y))?;
                 print!("{:width$}", "", width = width as usize);
             }
         } else {
             // No note selected - show placeholder
             for i in 0..height - 1 {
                 let y = start_y + 1 + i;
-                execute!(io::stdout(), cursor::MoveTo(0, y))?;
+                execute!(io::stdout(), cursor::MoveTo(start_x, y))?;
 
                 if i == height / 2 - 1 {
                     let msg = "Select or create a note to begin editing";
@@ -353,8 +377,8 @@ impl UI {
 
         let shortcuts = match app.mode {
             AppMode::Search => "ESC: Cancel | Enter: Search",
-            AppMode::NoteList => "^Q: Quit | ^N: New | ^F: Search | ^T: Tags | ↑↓: Navigate | Enter: Edit",
-            AppMode::NoteEdit => "ESC: Back | ^S: Save | ^H: Highlight",
+            AppMode::NoteList => "^Q: Quit | ^N: New | ^F: Search | ^D: Delete | ^</>: Resize | Enter: Edit",
+            AppMode::NoteEdit => "ESC: Back | ^S: Save | ^H: Highlight | ^</>: Resize",
             AppMode::CodeManager => "ESC: Back | N: New Code",
             AppMode::Highlighting => "ESC: Cancel | Enter: Apply Code",
         };
