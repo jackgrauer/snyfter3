@@ -1063,8 +1063,9 @@ impl TextEditor {
 
     fn paste(&mut self) -> Result<bool> {
         if let Ok(clipboard_text) = self.paste_from_clipboard() {
-            // Get the current cursor position in the document
-            let cursor_byte_pos = self.position_to_byte_index(self.cursor_pos);
+            // Get the current cursor position from the selection (which is always up to date)
+            let text = self.rope.slice(..);
+            let cursor_char_pos = self.selection.primary().cursor(text);
 
             // Handle block selection paste
             if let Some(ref block_sel) = self.block_selection {
@@ -1130,13 +1131,34 @@ impl TextEditor {
                 self.selection_anchor = None;
             } else {
                 // No selection - insert at cursor position
-                let mut new_text = self.rope.to_string();
-                new_text.insert_str(cursor_byte_pos, &clipboard_text);
+                // Convert char position to byte position for string manipulation
+                let rope_str = self.rope.to_string();
+                let mut char_count = 0;
+                let mut byte_pos = 0;
+
+                for ch in rope_str.chars() {
+                    if char_count >= cursor_char_pos {
+                        break;
+                    }
+                    byte_pos += ch.len_utf8();
+                    char_count += 1;
+                }
+
+                let mut new_text = rope_str;
+                new_text.insert_str(byte_pos, &clipboard_text);
 
                 self.rope = Rope::from_str(&new_text);
-                let new_pos = cursor_byte_pos + clipboard_text.len();
-                self.selection = Selection::point(new_pos);
-                self.cursor_pos = self.byte_index_to_position(new_pos);
+
+                // Calculate new cursor position in chars
+                let new_char_pos = cursor_char_pos + clipboard_text.chars().count();
+                self.selection = Selection::point(new_char_pos);
+
+                // Update cursor_pos to match
+                let text = self.rope.slice(..);
+                let line = text.char_to_line(new_char_pos);
+                let line_start = text.line_to_char(line);
+                let col = new_char_pos - line_start;
+                self.cursor_pos = Position::new(line, col);
             }
 
             return Ok(true);
