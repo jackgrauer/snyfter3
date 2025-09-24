@@ -15,22 +15,17 @@ use chrono;
 use nucleo::{Matcher, Utf32Str, pattern::{Pattern, CaseMatching, Normalization}};
 
 mod note_store;
-mod search_engine;
 mod ui;
 mod qda_codes;  // Qualitative data analysis codes/tags
 mod editor;
 mod edit_renderer;
 mod block_selection;
-mod markdown;
-mod templates;
 mod syntax;
 
 use note_store::{Note, NoteStore};
-use search_engine::SearchEngine;
 use ui::UI;
 use qda_codes::CodeManager;
 use editor::TextEditor;
-use templates::TemplateManager;
 
 #[derive(Parser, Debug)]
 #[command(name = "snyfter3", author, version, about)]
@@ -56,11 +51,9 @@ pub enum FocusArea {
 pub struct App {
     // Core components
     notes: NoteStore,
-    search: SearchEngine,
     codes: CodeManager,
     ui: UI,
     editor: TextEditor,
-    templates: TemplateManager,
 
     // All notes and filtering
     all_notes: Vec<Note>,  // All notes to search through
@@ -127,27 +120,18 @@ fn update_arrow_acceleration(app: &mut App, key: KeyCode) -> usize {
 impl App {
     pub fn new(notes_dir: PathBuf) -> Result<Self> {
         let notes = NoteStore::new(&notes_dir)?;
-        let search = SearchEngine::new(&notes_dir)?;
         let codes = CodeManager::new(&notes_dir)?;
         let ui = UI::new()?;
 
         // Load initial notes
         let all_notes = notes.get_all_notes()?;
-
-        // Index all notes in search engine
-        for note in &all_notes {
-            search.index_note(&note.id, &note.title, &note.content, &note.tags)?;
-        }
-
         let filtered_notes = all_notes.clone();
 
         Ok(App {
             notes,
-            search,
             codes,
             ui,
             editor: TextEditor::new(),
-            templates: TemplateManager::new(),
             all_notes,
             selected_note: None,
             selected_note_index: 0,
@@ -351,34 +335,6 @@ impl App {
     }
 
 
-    fn apply_template(&mut self, template_name: &str) -> Result<()> {
-        // Create new note with template
-        // Auto-save handles saving
-
-        let title = format!("Note {}", chrono::Utc::now().format("%Y-%m-%d %H:%M"));
-
-        // Get template content
-        let mut vars = std::collections::HashMap::new();
-        vars.insert("TITLE".to_string(), title.clone());
-        vars.insert("PROJECT_NAME".to_string(), "My Project".to_string());
-        vars.insert("TOPIC".to_string(), "Research Topic".to_string());
-        vars.insert("AUTHOR".to_string(), "Author Name".to_string());
-        vars.insert("LANGUAGE".to_string(), "rust".to_string());
-        vars.insert("FIELD".to_string(), "field".to_string());
-        vars.insert("GENRE".to_string(), "genre".to_string());
-
-        let content = self.templates.apply_template(template_name, vars)?;
-
-        let note = self.notes.create_note(&title, &content)?;
-
-        // Index in search engine
-        self.search.index_note(&note.id, &note.title, &note.content, &note.tags)?;
-
-        self.selected_note = Some(note);
-        self.editor.set_text(&content);
-        self.status_message = format!("Created new note from {} template", template_name);
-        Ok(())
-    }
 
     fn create_new_note(&mut self) -> Result<()> {
         // Auto-save handles saving
@@ -386,8 +342,6 @@ impl App {
         let title = format!("Note {}", chrono::Utc::now().format("%Y-%m-%d %H:%M"));
         let note = self.notes.create_note(&title, "")?;
 
-        // Index in search engine
-        self.search.index_note(&note.id, &note.title, &note.content, &note.tags)?;
 
         // Add to all_notes and update filtered
         self.all_notes.push(note.clone());
@@ -460,14 +414,12 @@ impl App {
         if let Some(mut note) = self.selected_note.take() {
             note.content = self.editor.get_text();
 
-            // Extract tags from content
-            use crate::markdown::MarkdownRenderer;
-            note.tags = MarkdownRenderer::extract_tags(&note.content);
+            // Extract tags from content (simplified without markdown module)
+            note.tags = Self::extract_tags(&note.content);
 
             self.notes.update_note(&note)?;
 
             // Update search index
-            self.search.index_note(&note.id, &note.title, &note.content, &note.tags)?;
 
             self.selected_note = Some(note);
         }
@@ -481,17 +433,16 @@ impl App {
             let _cursor_pos = self.editor.get_cursor_position();
 
             // Simple approach: find all wiki links and check if cursor is within one
-            use crate::markdown::MarkdownRenderer;
-            let links = MarkdownRenderer::extract_wiki_links(&text);
+            let links = Self::extract_wiki_links(&text);
 
             // Find if cursor is within a wiki link (simplified for now)
 
             // Search for the link at cursor position (simplified for now)
-            for link_title in links {
+            for link_title in &links {
                 // Search for a note with this title
                 let all_notes = self.notes.get_all_notes()?;
                 for (idx, note) in all_notes.iter().enumerate() {
-                    if note.title == link_title {
+                    if &note.title == link_title {
                         self.selected_note_index = idx;
                         self.load_selected_note()?;
                         self.status_message = format!("Navigated to: {}", link_title);
@@ -501,7 +452,6 @@ impl App {
 
                 // If not found, create a new note with this title
                 let new_note = self.notes.create_note(&link_title, "")?;
-                self.search.index_note(&new_note.id, &new_note.title, &new_note.content, &new_note.tags)?;
                 self.selected_note = Some(new_note);
                 self.editor.set_text("");
                 self.status_message = format!("Created new note: {}", link_title);
@@ -656,7 +606,6 @@ impl App {
             // Delete from storage
             self.notes.delete_note(&id)?;
             // Delete from search index
-            self.search.delete_note(&id)?;
 
             // Remove from all_notes and filtered_notes
             self.all_notes.retain(|n| n.id != id);
@@ -681,6 +630,49 @@ impl App {
             self.status_message = "Note deleted".to_string();
         }
         Ok(())
+    }
+
+    // Simple helper methods to replace markdown module functionality
+    fn extract_tags(content: &str) -> Vec<String> {
+        let mut tags = Vec::new();
+        for line in content.lines() {
+            for word in line.split_whitespace() {
+                if word.starts_with('#') && word.len() > 1 && !word.chars().nth(1).unwrap().is_ascii_digit() {
+                    tags.push(word[1..].to_string());
+                }
+            }
+        }
+        tags
+    }
+
+    fn extract_wiki_links(text: &str) -> Vec<String> {
+        let mut links = Vec::new();
+        let mut in_link = false;
+        let mut current_link = String::new();
+        let mut bracket_count = 0;
+
+        for ch in text.chars() {
+            if ch == '[' {
+                bracket_count += 1;
+                if bracket_count == 2 {
+                    in_link = true;
+                    current_link.clear();
+                }
+            } else if ch == ']' && in_link {
+                bracket_count -= 1;
+                if bracket_count == 0 {
+                    in_link = false;
+                    if !current_link.is_empty() {
+                        links.push(current_link.clone());
+                    }
+                }
+            } else if in_link && ch != ']' {
+                current_link.push(ch);
+            } else if !in_link {
+                bracket_count = 0;
+            }
+        }
+        links
     }
 }
 

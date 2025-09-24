@@ -11,12 +11,10 @@ use std::io;
 use unicode_width::UnicodeWidthStr;
 
 use crate::{App, FocusArea};
-use crate::markdown::MarkdownRenderer;
 use crate::syntax::SyntaxHighlighter;
 use crate::edit_renderer::EditPanelRenderer;
 
 pub struct UI {
-    markdown_renderer: MarkdownRenderer,
     syntax_highlighter: SyntaxHighlighter,
     edit_renderer: EditPanelRenderer,
 }
@@ -24,7 +22,6 @@ pub struct UI {
 impl UI {
     pub fn new() -> Result<Self> {
         Ok(UI {
-            markdown_renderer: MarkdownRenderer::new(),
             syntax_highlighter: SyntaxHighlighter::new()?,
             edit_renderer: EditPanelRenderer::new(80, 24),  // Default size, will be updated
         })

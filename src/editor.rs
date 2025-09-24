@@ -193,8 +193,8 @@ impl TextEditor {
                 self.copy_selection()?;
             }
 
-            // Paste
-            (KeyCode::Char('v'), mods) if mods.contains(KeyModifiers::CONTROL) => {
+            // Paste (Cmd+V on macOS, Ctrl+V on other platforms)
+            (KeyCode::Char('v'), mods) if mods.contains(KeyModifiers::CONTROL) || mods.contains(KeyModifiers::SUPER) => {
                 if self.paste()? {
                     modified = true;
                 }
@@ -1063,26 +1063,81 @@ impl TextEditor {
 
     fn paste(&mut self) -> Result<bool> {
         if let Ok(clipboard_text) = self.paste_from_clipboard() {
-            let range = self.selection.primary();
-            let mut new_text = self.rope.to_string();
+            // Get the current cursor position in the document
+            let cursor_byte_pos = self.position_to_byte_index(self.cursor_pos);
 
-            // Calculate new position before modifying the rope
-            let new_pos = if range.len() > 0 {
-                // If there's a selection, replace it
+            // Handle block selection paste
+            if let Some(ref block_sel) = self.block_selection {
+                // For block selection, paste at each line in the block
+                let mut new_text = self.rope.to_string();
+
+                // Get the visual columns for the block
+                let min_col = block_sel.anchor_visual_col.min(block_sel.cursor_visual_col);
+                let min_row = block_sel.anchor.line.min(block_sel.cursor.line);
+                let max_row = block_sel.anchor.line.max(block_sel.cursor.line);
+
+                // Split clipboard text into lines
+                let paste_lines: Vec<&str> = clipboard_text.lines().collect();
+
+                // Apply paste to each line in the selection
+                for (i, row) in (min_row..=max_row).enumerate() {
+                    if row < self.rope.len_lines() {
+                        let line_start = self.rope.line_to_byte(row);
+                        let line = self.rope.line(row);
+                        let line_text = line.as_str().unwrap_or("");
+
+                        // Calculate the byte position for this visual column
+                        let mut visual_col = 0;
+                        let mut byte_col = 0;
+                        for ch in line_text.chars() {
+                            if visual_col >= min_col {
+                                break;
+                            }
+                            byte_col += ch.len_utf8();
+                            visual_col += if ch == '\t' { 4 } else { 1 };
+                        }
+
+                        // Get the paste text for this line
+                        let paste_text = if i < paste_lines.len() {
+                            paste_lines[i]
+                        } else if paste_lines.len() == 1 {
+                            paste_lines[0]  // Repeat single line
+                        } else {
+                            ""  // No more lines to paste
+                        };
+
+                        // Insert at the calculated position
+                        let insert_pos = line_start + byte_col;
+                        if insert_pos <= new_text.len() {
+                            new_text.insert_str(insert_pos, paste_text);
+                        }
+                    }
+                }
+
+                self.rope = Rope::from_str(&new_text);
+                self.block_selection = None;
+            } else if self.selection_anchor.is_some() {
+                // Handle regular selection paste - replace the selection
+                let range = self.selection.primary();
+                let mut new_text = self.rope.to_string();
                 new_text.drain(range.from()..range.to());
                 new_text.insert_str(range.from(), &clipboard_text);
-                range.from() + clipboard_text.len()
-            } else {
-                // Otherwise insert at cursor
-                let text = self.rope.slice(..);
-                let pos = range.cursor(text);
-                new_text.insert_str(pos, &clipboard_text);
-                pos + clipboard_text.len()
-            };
 
-            self.rope = Rope::from_str(&new_text);
-            self.selection = Selection::point(new_pos);
-            self.selection_anchor = None;
+                self.rope = Rope::from_str(&new_text);
+                let new_pos = range.from() + clipboard_text.len();
+                self.selection = Selection::point(new_pos);
+                self.cursor_pos = self.byte_index_to_position(new_pos);
+                self.selection_anchor = None;
+            } else {
+                // No selection - insert at cursor position
+                let mut new_text = self.rope.to_string();
+                new_text.insert_str(cursor_byte_pos, &clipboard_text);
+
+                self.rope = Rope::from_str(&new_text);
+                let new_pos = cursor_byte_pos + clipboard_text.len();
+                self.selection = Selection::point(new_pos);
+                self.cursor_pos = self.byte_index_to_position(new_pos);
+            }
 
             return Ok(true);
         }
@@ -1123,6 +1178,54 @@ impl TextEditor {
         }
 
         Ok(())
+    }
+
+    // Helper method to convert a Position to a byte index in the rope
+    fn position_to_byte_index(&self, pos: Position) -> usize {
+        if pos.row >= self.rope.len_lines() {
+            return self.rope.len_bytes();
+        }
+
+        let line_start = self.rope.line_to_byte(pos.row);
+        let line = self.rope.line(pos.row);
+        let line_str = line.as_str().unwrap_or("");
+
+        // Convert visual column to byte offset
+        let mut visual_col = 0;
+        let mut byte_offset = 0;
+        for ch in line_str.chars() {
+            if visual_col >= pos.col {
+                break;
+            }
+            byte_offset += ch.len_utf8();
+            visual_col += if ch == '\t' { 4 } else { 1 };
+        }
+
+        line_start + byte_offset.min(line.len_bytes())
+    }
+
+    // Helper method to convert a byte index to a Position
+    fn byte_index_to_position(&self, byte_idx: usize) -> Position {
+        let byte_idx = byte_idx.min(self.rope.len_bytes());
+        let row = self.rope.byte_to_line(byte_idx);
+        let line_start = self.rope.line_to_byte(row);
+        let col_byte = byte_idx - line_start;
+
+        // Convert byte offset to visual column
+        let line = self.rope.line(row);
+        let line_str = line.as_str().unwrap_or("");
+        let mut visual_col = 0;
+        let mut byte_count = 0;
+
+        for ch in line_str.chars() {
+            if byte_count >= col_byte {
+                break;
+            }
+            byte_count += ch.len_utf8();
+            visual_col += if ch == '\t' { 4 } else { 1 };
+        }
+
+        Position::new(row, visual_col)
     }
 
     fn paste_from_clipboard(&self) -> Result<String> {
