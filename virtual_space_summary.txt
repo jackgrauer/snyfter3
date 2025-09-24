@@ -1,0 +1,22 @@
+Virtual Space Block Selection - Complete!
+
+The block selection now works anywhere in the editor space, including:
+
+1. BEYOND LINE ENDINGS - Select rectangular areas past the end of lines
+2. VIRTUAL LINES - Select on lines that don't exist yet (below the file)
+3. TRUE RECTANGLES - Draw any rectangle anywhere, regardless of text
+
+KEY FEATURES:
+• Click and drag anywhere to create block selections
+• Selection shows as blue highlight even in empty space
+• Copy (Ctrl+C) pads with spaces when selecting virtual space
+• Preserves exact rectangular shape regardless of line lengths
+
+EXAMPLE USE CASES:
+• Align comments at column 80 even if lines are shorter
+• Select rectangular regions for columnar data manipulation
+• Copy/paste rectangular blocks maintaining exact spacing
+• Create perfectly aligned text blocks
+
+The selection is now truly geometry-based rather than text-based,
+making it work like a drawing tool for rectangular text regions.

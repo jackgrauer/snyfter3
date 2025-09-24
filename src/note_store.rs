@@ -4,7 +4,7 @@ use anyhow::Result;
 use rusqlite::{Connection, params, OptionalExtension};
 use serde::{Serialize, Deserialize};
 use chrono::{DateTime, Utc};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use sha2::{Sha256, Digest};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -28,7 +28,6 @@ pub struct CodedSegment {
 
 pub struct NoteStore {
     conn: Connection,
-    notes_dir: PathBuf,
 }
 
 impl NoteStore {
@@ -55,7 +54,6 @@ impl NoteStore {
 
         Ok(NoteStore {
             conn,
-            notes_dir: notes_dir.to_path_buf(),
         })
     }
 
@@ -189,6 +187,7 @@ impl NoteStore {
         Ok(note)
     }
 
+    #[allow(dead_code)]
     pub fn search_notes(&self, query: &str) -> Result<Vec<Note>> {
         // Basic search without FTS5 - Tantivy will handle full-text search
         let query_pattern = format!("%{}%", query);
@@ -291,6 +290,7 @@ impl NoteStore {
         format!("{:x}", result)[..12].to_string()
     }
 
+    #[allow(dead_code)]
     pub fn add_code_to_note(&mut self, note_id: &str, segment: CodedSegment) -> Result<()> {
         if let Some(mut note) = self.get_note(note_id)? {
             note.codes.push(segment);
@@ -299,6 +299,7 @@ impl NoteStore {
         Ok(())
     }
 
+    #[allow(dead_code)]
     pub fn remove_code_from_note(&mut self, note_id: &str, code_id: &str, start: usize) -> Result<()> {
         if let Some(mut note) = self.get_note(note_id)? {
             note.codes.retain(|c| !(c.code_id == code_id && c.start_offset == start));

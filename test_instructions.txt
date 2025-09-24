@@ -1,0 +1,5 @@
+Testing block selection feature:
+1. Alt+Click to start block selection  
+2. Alt+Drag to extend block selection
+3. Alt+Shift+Arrow keys for keyboard block selection
+4. Ctrl+C/Ctrl+X to copy/cut block selections

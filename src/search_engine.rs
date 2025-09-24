@@ -16,10 +16,12 @@ use fuzzy_matcher::FuzzyMatcher;
 use fuzzy_matcher::skim::SkimMatcherV2;
 
 pub struct SearchEngine {
+    #[allow(dead_code)]
     index: Index,
     writer: Arc<Mutex<IndexWriter>>,
     reader: IndexReader,
     query_parser: QueryParser,
+    #[allow(dead_code)]
     schema: Schema,
     title_field: Field,
     content_field: Field,
@@ -260,6 +262,7 @@ impl SearchEngine {
         Ok(())
     }
 
+    #[allow(dead_code)]
     pub fn reindex_all(&self, notes: &[crate::note_store::Note]) -> Result<()> {
         let mut writer = self.writer.lock().unwrap();
 
@@ -285,7 +288,9 @@ impl SearchEngine {
 pub struct SearchResult {
     pub id: String,
     pub title: String,
+    #[allow(dead_code)]
     pub content_preview: String,
     pub score: f32,
+    #[allow(dead_code)]
     pub tags: Vec<String>,
 }

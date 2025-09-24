@@ -25,6 +25,7 @@ pub struct CodeColor {
 }
 
 impl CodeColor {
+    #[allow(dead_code)]
     pub fn to_crossterm_color(&self) -> Color {
         Color::Rgb {
             r: self.r,
@@ -229,6 +230,7 @@ impl CodeManager {
         self.codes.values().collect()
     }
 
+    #[allow(dead_code)]
     pub fn apply_code(
         &mut self,
         code_id: &str,
@@ -255,6 +257,7 @@ impl CodeManager {
         Ok(())
     }
 
+    #[allow(dead_code)]
     pub fn remove_code_application(
         &mut self,
         code_id: &str,
@@ -270,6 +273,7 @@ impl CodeManager {
         Ok(())
     }
 
+    #[allow(dead_code)]
     pub fn get_code_applications(&self, note_id: &str) -> Result<Vec<CodeApplication>> {
         let mut stmt = self.conn.prepare(
             "SELECT code_id, start_offset, end_offset, memo, created_at
@@ -350,3 +354,4 @@ pub struct CodeApplication {
     pub memo: Option<String>,
     pub created_at: String,
 }
+

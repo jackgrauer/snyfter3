@@ -2111,6 +2111,7 @@ dependencies = [
  "helix-core",
  "helix-view",
  "notify",
+ "nucleo",
  "pulldown-cmark",
  "regex",
  "rusqlite",

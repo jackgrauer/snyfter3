@@ -39,6 +39,7 @@ chrono = { version = "0.4", features = ["serde"] }
 unicode-width = "0.1"
 regex = "1.10"
 fuzzy-matcher = "0.3"  # For fuzzy search like NValt
+nucleo = "0.5"  # High-performance fuzzy finder
 
 # Syntax highlighting for qualitative codes
 syntect = "5.2"  # Syntax highlighting library

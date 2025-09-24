@@ -1,0 +1,19 @@
+Block Selection Feature - Updated:
+
+MOUSE CONTROLS:
+• Click and drag to create block selections (no Alt required)
+• Single click without dragging just positions cursor
+• Block selection is created when you drag from initial click point
+
+KEYBOARD CONTROLS:  
+• Alt+Shift+Arrow keys to create/extend block selections
+• Regular arrow keys clear block selection
+• Shift+Arrow keys create regular (linear) selections
+
+OPERATIONS:
+• Ctrl+C copies block selection (rectangular area)
+• Ctrl+X cuts block selection
+• Any text input clears block selection
+
+The block selection visually highlights a rectangular area of text
+and allows copying/cutting that exact rectangular region.

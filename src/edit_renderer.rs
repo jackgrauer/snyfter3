@@ -346,93 +346,6 @@ impl EditPanelRenderer {
         Ok(())
     }
     
-    /// Render with block selection (rectangular selection)
-    pub fn render_with_block_selection(
-        &self,
-        start_x: u16,
-        start_y: u16,
-        max_width: u16,
-        max_height: u16,
-        cursor: (usize, usize),
-        block_selection: Option<&BlockSelection>,
-    ) -> io::Result<()> {
-        let mut stdout = io::stdout();
-
-        // Clamp rendering to the specified bounds
-        let render_width = self.viewport_width.min(max_width);
-        let render_height = self.viewport_height.min(max_height);
-
-        // Process block selection bounds if present
-        let block_bounds = if let Some(block_sel) = block_selection {
-            let ((min_line, min_col), (max_line, max_col)) = block_sel.visual_bounds();
-            Some((min_col, min_line, max_col, max_line))
-        } else {
-            None
-        };
-
-        for y in 0..render_height {
-            let buffer_y = (self.scroll_y + y) as usize;
-
-            // Move cursor to start of line
-            print!("\x1b[{};{}H", start_y + y + 1, start_x + 1);  // 1-based coordinates
-
-            if buffer_y < self.buffer.len() {
-                let row = &self.buffer[buffer_y];
-                let start_col = self.scroll_x as usize;
-                let end_col = (start_col + render_width as usize).min(row.len());
-
-                // Render characters that exist in the line
-                for x in start_col..end_col {
-                    let is_cursor = cursor.1 == buffer_y && cursor.0 == x;
-
-                    // Check if position is in block selection
-                    let is_in_block = if let Some((min_col, min_line, max_col, max_line)) = block_bounds {
-                        buffer_y >= min_line && buffer_y <= max_line &&
-                        x >= min_col && x <= max_col
-                    } else {
-                        false
-                    };
-
-                    let ch = row.get(x).copied().unwrap_or(' ');
-
-                    if is_cursor {
-                        // ANSI: Cursor highlighting (light color)
-                        print!("\x1b[48;2;80;80;200m{}\x1b[m", ch);
-                    } else if is_in_block {
-                        // ANSI: Block selection highlighting
-                        print!("\x1b[48;2;80;80;200m\x1b[38;2;255;255;255m{}\x1b[m", ch);
-                    } else {
-                        // Normal character
-                        write!(stdout, "{}", ch)?;
-                    }
-                }
-
-                // Handle the rest of the line (including virtual cursor position)
-                let chars_written = end_col - start_col;
-                if chars_written < render_width as usize {
-                    let remaining_space = render_width as usize - chars_written;
-
-                    // Check if cursor is in the virtual space (past line end)
-                    for offset in 0..remaining_space {
-                        let virtual_x = end_col + offset;
-                        if cursor.1 == buffer_y && cursor.0 == virtual_x {
-                            // Render cursor in virtual space
-                            print!("\x1b[48;2;80;80;200m \x1b[m");
-                        } else {
-                            write!(stdout, " ")?;
-                        }
-                    }
-                }
-            } else {
-                // Clear the rest of the viewport
-                write!(stdout, "{:width$}", "", width = render_width as usize)?;
-            }
-        }
-
-
-        stdout.flush()?;
-        Ok(())
-    }
 
     /// Render with cursor and selection highlighting
     pub fn render_with_cursor_and_selection(
@@ -483,8 +396,12 @@ impl EditPanelRenderer {
                     
                     // Check if position is in selection
                     let is_selected = if let Some(((sel_start_row, sel_start_col), (sel_end_row, sel_end_col))) = selection_bounds {
-                        (buffer_y > sel_start_row || (buffer_y == sel_start_row && x >= sel_start_col)) &&
-                        (buffer_y < sel_end_row || (buffer_y == sel_end_row && x <= sel_end_col))
+                        // Only show selection if it has actual length (not just a cursor position)
+                        let has_length = sel_start_row != sel_end_row || sel_start_col != sel_end_col;
+                        has_length && (
+                            (buffer_y > sel_start_row || (buffer_y == sel_start_row && x >= sel_start_col)) &&
+                            (buffer_y < sel_end_row || (buffer_y == sel_end_row && x < sel_end_col))
+                        )
                     } else {
                         false
                     };
@@ -498,8 +415,8 @@ impl EditPanelRenderer {
                         // ANSI: Selection highlighting (same blue as block selection)
                         print!("\x1b[48;2;80;80;200m\x1b[38;2;255;255;255m{}\x1b[m", ch);
                     } else {
-                        // Normal character
-                        write!(stdout, "{}", ch)?;
+                        // Normal character - explicitly reset to ensure no background
+                        print!("\x1b[0m{}", ch);
                     }
                 }
                 
@@ -514,7 +431,7 @@ impl EditPanelRenderer {
                             // Render cursor in virtual space
                             print!("\x1b[48;2;80;80;200m \x1b[m");
                         } else {
-                            write!(stdout, " ")?;
+                            print!("\x1b[0m ");
                         }
                     }
                 }
@@ -531,6 +448,169 @@ impl EditPanelRenderer {
             }
         }
 
+
+        stdout.flush()?;
+        Ok(())
+    }
+
+    /// Render with cursor and block selection highlighting
+    pub fn render_with_cursor_and_block_selection(
+        &self,
+        start_x: u16,
+        start_y: u16,
+        max_width: u16,
+        max_height: u16,
+        cursor: (usize, usize),
+        block_selection: Option<&BlockSelection>,
+        selection_start: Option<(usize, usize)>,
+        selection_end: Option<(usize, usize)>,
+    ) -> io::Result<()> {
+        let mut stdout = io::stdout();
+
+        // Clamp rendering to the specified bounds
+        let render_width = self.viewport_width.min(max_width);
+        let render_height = self.viewport_height.min(max_height);
+
+        // Process block selection bounds if present
+        let block_bounds = if let Some(block_sel) = block_selection {
+            let ((min_line, min_col), (max_line, max_col)) = block_sel.visual_bounds();
+            // Only render block selection if it has actual area (not zero-size)
+            if min_line != max_line || min_col != max_col {
+                Some((min_col, min_line, max_col, max_line))
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        // Calculate regular selection bounds if we have both start and end
+        let selection_bounds = if let (Some(start), Some(end)) = (selection_start, selection_end) {
+            let (start_row, start_col) = start;
+            let (end_row, end_col) = end;
+
+            // Normalize selection (ensure start comes before end)
+            if start_row < end_row || (start_row == end_row && start_col < end_col) {
+                Some(((start_row, start_col), (end_row, end_col)))
+            } else {
+                Some(((end_row, end_col), (start_row, start_col)))
+            }
+        } else {
+            None
+        };
+
+        for y in 0..render_height {
+            let buffer_y = (self.scroll_y + y) as usize;
+
+            // Move cursor to start of line
+            print!("\x1b[{};{}H", start_y + y + 1, start_x + 1);  // 1-based coordinates
+
+            if buffer_y < self.buffer.len() {
+                let row = &self.buffer[buffer_y];
+                let start_col = self.scroll_x as usize;
+                let end_col = (start_col + render_width as usize).min(row.len());
+
+                // Render characters that exist in the line
+                for x in start_col..end_col {
+                    let is_cursor = cursor.1 == buffer_y && cursor.0 == x;
+
+                    // Check if position is in block selection
+                    let is_in_block = if let Some((min_col, min_line, max_col, max_line)) = block_bounds {
+                        buffer_y >= min_line && buffer_y <= max_line &&
+                        x >= min_col && x <= max_col
+                    } else {
+                        false
+                    };
+
+                    // Check if position is in regular selection (only if no block selection)
+                    let is_selected = if block_selection.is_none() {
+                        if let Some(((sel_start_row, sel_start_col), (sel_end_row, sel_end_col))) = selection_bounds {
+                            // Only show selection if it has actual length (not just a cursor position)
+                            let has_length = sel_start_row != sel_end_row || sel_start_col != sel_end_col;
+                            has_length && (
+                                (buffer_y > sel_start_row || (buffer_y == sel_start_row && x >= sel_start_col)) &&
+                                (buffer_y < sel_end_row || (buffer_y == sel_end_row && x < sel_end_col))
+                            )
+                        } else {
+                            false
+                        }
+                    } else {
+                        false
+                    };
+
+                    let ch = row.get(x).copied().unwrap_or(' ');
+
+                    if is_cursor {
+                        // ANSI: Cursor highlighting (light color)
+                        print!("\x1b[48;2;80;80;200m{}\x1b[m", ch);
+                    } else if is_in_block {
+                        // ANSI: Block selection highlighting
+                        print!("\x1b[48;2;80;80;200m\x1b[38;2;255;255;255m{}\x1b[m", ch);
+                    } else if is_selected {
+                        // ANSI: Regular selection highlighting
+                        print!("\x1b[48;2;80;80;200m\x1b[38;2;255;255;255m{}\x1b[m", ch);
+                    } else {
+                        // Normal character - explicitly reset to ensure no background
+                        print!("\x1b[0m{}", ch);
+                    }
+                }
+
+                // Handle the rest of the line (including virtual cursor and block selection)
+                let chars_written = end_col - start_col;
+                if chars_written < render_width as usize {
+                    let remaining_space = render_width as usize - chars_written;
+
+                    // Check virtual space for cursor and block selection
+                    for offset in 0..remaining_space {
+                        let virtual_x = end_col + offset;
+                        let is_cursor = cursor.1 == buffer_y && cursor.0 == virtual_x;
+
+                        // Check if virtual position is in block selection
+                        let is_in_block = if let Some((min_col, min_line, max_col, max_line)) = block_bounds {
+                            buffer_y >= min_line && buffer_y <= max_line &&
+                            virtual_x >= min_col && virtual_x <= max_col
+                        } else {
+                            false
+                        };
+
+                        if is_cursor {
+                            // Render cursor in virtual space
+                            print!("\x1b[48;2;80;80;200m \x1b[m");
+                        } else if is_in_block {
+                            // Render block selection in virtual space
+                            print!("\x1b[48;2;80;80;200m\x1b[38;2;255;255;255m \x1b[m");
+                        } else {
+                            print!("\x1b[0m ");
+                        }
+                    }
+                }
+            } else {
+                // Handle lines beyond the buffer (virtual lines)
+                // Check if this virtual line is in block selection
+                for x in 0..render_width as usize {
+                    let virtual_x = (self.scroll_x as usize) + x;
+                    let is_cursor = cursor.1 == buffer_y && cursor.0 == virtual_x;
+
+                    // Check if virtual position is in block selection
+                    let is_in_block = if let Some((min_col, min_line, max_col, max_line)) = block_bounds {
+                        buffer_y >= min_line && buffer_y <= max_line &&
+                        virtual_x >= min_col && virtual_x <= max_col
+                    } else {
+                        false
+                    };
+
+                    if is_cursor {
+                        // Render cursor on virtual line
+                        print!("\x1b[48;2;80;80;200m \x1b[m");
+                    } else if is_in_block {
+                        // Render block selection on virtual line
+                        print!("\x1b[48;2;80;80;200m\x1b[38;2;255;255;255m \x1b[m");
+                    } else {
+                        write!(stdout, " ")?;
+                    }
+                }
+            }
+        }
 
         stdout.flush()?;
         Ok(())

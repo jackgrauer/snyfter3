@@ -10,16 +10,40 @@ use crossterm::{
 use std::io;
 use unicode_width::UnicodeWidthStr;
 
-use crate::{App, AppMode};
+use crate::{App, FocusArea};
+use crate::markdown::MarkdownRenderer;
+use crate::syntax::SyntaxHighlighter;
+use crate::edit_renderer::EditPanelRenderer;
 
-pub struct UI {}
+pub struct UI {
+    markdown_renderer: MarkdownRenderer,
+    syntax_highlighter: SyntaxHighlighter,
+    edit_renderer: EditPanelRenderer,
+}
 
 impl UI {
     pub fn new() -> Result<Self> {
-        Ok(UI {})
+        Ok(UI {
+            markdown_renderer: MarkdownRenderer::new(),
+            syntax_highlighter: SyntaxHighlighter::new()?,
+            edit_renderer: EditPanelRenderer::new(80, 24),  // Default size, will be updated
+        })
     }
 
-    pub fn render(&self, app: &App) -> Result<()> {
+    /// Handle mouse click in the editor area and convert to document position
+    pub fn handle_editor_click(&self, app: &mut App, click_row: usize, click_col: usize) {
+        // Get the current scroll offsets from the edit renderer
+        let (scroll_x, scroll_y) = self.edit_renderer.get_scroll();
+
+        // Convert screen position to document position by adding scroll offsets
+        let doc_row = click_row + scroll_y as usize;
+        let doc_col = click_col + scroll_x as usize;
+
+        // Set the cursor position in the editor (allows virtual positioning anywhere on grid)
+        app.editor.set_cursor_position(doc_row, doc_col);
+    }
+
+    pub fn render(&mut self, app: &App) -> Result<()> {
         let (width, height) = terminal::size()?;
 
         // Clear screen
@@ -33,39 +57,29 @@ impl UI {
         let split_x = (width as f32 * app.split_ratio) as u16;
         let editor_width = width.saturating_sub(split_x + 1);  // +1 for divider
 
-        // Render header across top
-        if app.mode == AppMode::Search {
-            self.render_search_box(app, width)?;
-        } else {
-            self.render_header(app, width)?;
-        }
+        // Always render header and search bar
+        self.render_header(app, width)?;
+        self.render_search_bar(app, width)?;
 
-        // Render note list on left
-        self.render_note_list(app, split_x, 1, height - 2)?;  // -2 for header and status
+        // Render note list on left (starting at line 3)
+        self.render_note_list(app, split_x, 2, height - 3)?;  // -3 for header, search, and status
 
         // Render divider
-        self.render_divider(split_x, 1, height - 2, app.dragging_divider)?;
+        self.render_divider(split_x, 2, height - 3, app.dragging_divider)?;
 
         // Render editor on right
-        self.render_editor(app, split_x + 1, editor_width, 1, height - 2)?;
+        self.render_editor(app, split_x + 1, editor_width, 2, height - 3)?;
 
         self.render_status_bar(app, width, height)?;
 
-        // Position cursor based on mode
-        match app.mode {
-            AppMode::Search => {
+        // Position cursor based on focus area
+        match app.focus_area {
+            FocusArea::SearchBar => {
                 let search_len = app.search_query.width() as u16;
-                execute!(io::stdout(), cursor::Show, cursor::MoveTo(9 + search_len, 0))?;
-            }
-            AppMode::NoteEdit => {
-                // Show cursor in editor at correct position (right pane)
-                let split_x = (width as f32 * app.split_ratio) as u16;
-                let (cursor_row, cursor_col) = app.editor.get_cursor_screen_position();
-                let actual_row = 2 + cursor_row as u16;  // 2 for header and border
-                let actual_col = split_x + 1 + cursor_col as u16;  // +1 for divider
-                execute!(io::stdout(), cursor::Show, cursor::MoveTo(actual_col, actual_row))?;
+                execute!(io::stdout(), cursor::Show, cursor::MoveTo(9 + search_len, 1))?;
             }
             _ => {
+                // Hide the terminal cursor - we render our own block cursor in editor
                 execute!(io::stdout(), cursor::Hide)?;
             }
         }
@@ -81,9 +95,8 @@ impl UI {
             SetForegroundColor(Color::Rgb { r: 200, g: 200, b: 200 }),
         )?;
 
-        let header = format!(" Snyfter3 - {} notes | Mode: {:?} ",
-            app.notes.get_note_count(),
-            app.mode
+        let header = format!(" Snyfter3 - {} notes ",
+            app.notes.get_note_count()
         );
 
         print!("{:width$}", header, width = width as usize);
@@ -116,19 +129,33 @@ impl UI {
         Ok(())
     }
 
-    fn render_search_box(&self, app: &App, width: u16) -> Result<()> {
+    fn render_search_bar(&self, app: &App, width: u16) -> Result<()> {
+        let is_focused = app.focus_area == FocusArea::SearchBar;
+
         execute!(
             io::stdout(),
-            cursor::MoveTo(0, 0),
-            SetBackgroundColor(Color::Rgb { r: 50, g: 50, b: 50 }),
-            SetForegroundColor(Color::Rgb { r: 255, g: 255, b: 255 }),
+            cursor::MoveTo(0, 1),
+            SetBackgroundColor(if is_focused {
+                Color::Rgb { r: 50, g: 70, b: 120 }  // Blue background when focused
+            } else {
+                Color::Rgb { r: 35, g: 35, b: 35 }
+            }),
+            SetForegroundColor(if is_focused {
+                Color::White
+            } else {
+                Color::Rgb { r: 150, g: 150, b: 150 }
+            }),
         )?;
 
         print!(" Search: {}", app.search_query);
 
+        // Show match count
+        let match_info = format!(" ({} notes) ", app.filtered_notes.len());
+
         // Clear rest of line
-        let used = 9 + app.search_query.width();
+        let used = 9 + app.search_query.width() + match_info.width();
         if used < width as usize {
+            print!("{}", match_info);
             print!("{:width$}", "", width = width as usize - used);
         }
 
@@ -140,20 +167,28 @@ impl UI {
         // Display search results if searching, otherwise all notes
         let display_height = height - 1;
 
-        // Render list header
+        // Render list header with focus indication
+        let is_focused = app.focus_area == FocusArea::NoteList;
+
         execute!(
             io::stdout(),
             cursor::MoveTo(0, start_y),
-            SetBackgroundColor(Color::Rgb { r: 30, g: 30, b: 30 }),
-            SetForegroundColor(Color::Rgb { r: 150, g: 150, b: 150 }),
+            SetBackgroundColor(if is_focused {
+                Color::Rgb { r: 40, g: 50, b: 70 }  // Darker blue when focused
+            } else {
+                Color::Rgb { r: 30, g: 30, b: 30 }
+            }),
+            SetForegroundColor(if is_focused {
+                Color::Rgb { r: 200, g: 200, b: 200 }
+            } else {
+                Color::Rgb { r: 150, g: 150, b: 150 }
+            }),
         )?;
 
         print!("{:width$}", " NOTES", width = width as usize);
 
-        // Render notes or search results
-        if !app.search_query.is_empty() && !app.search_results.is_empty() {
-            // Render search results
-            for (i, result) in app.search_results.iter().enumerate() {
+        // Render filtered notes
+        for (i, note) in app.filtered_notes.iter().enumerate() {
             if i >= display_height as usize {
                 break;
             }
@@ -176,78 +211,25 @@ impl UI {
                 )?;
             }
 
-                // Format search result line with preview
-                let display_text = if result.score > 0.0 {
-                    format!("{} [{}]", result.title, (result.score * 100.0) as u32)
-                } else {
-                    result.title.clone()
-                };
+            // Format note line
+            let title = if note.title.width() > (width as usize - 4) {
+                format!("{}...", &note.title.chars().take(width as usize - 7).collect::<String>())
+            } else {
+                note.title.clone()
+            };
 
-                let display = if display_text.width() > (width as usize - 4) {
-                    format!("{}...", &display_text.chars().take(width as usize - 7).collect::<String>())
-                } else {
-                    display_text
-                };
+            print!(" {:<width$}", title, width = width as usize - 1);
+        }
 
-                print!(" {:<width$}", display, width = width as usize - 1);
-            }
-
-            // Clear remaining lines
-            for i in app.search_results.len()..display_height as usize {
-                let y = start_y + 1 + i as u16;
-                execute!(
-                    io::stdout(),
-                    cursor::MoveTo(0, y),
-                    SetBackgroundColor(Color::Black),
-                )?;
-                print!("{:width$}", "", width = width as usize);
-            }
-        } else {
-            // Render all notes
-            let notes = app.notes.get_all_notes()?;
-            for (i, note) in notes.iter().enumerate() {
-                if i >= display_height as usize {
-                    break;
-                }
-
-                let y = start_y + 1 + i as u16;
-                execute!(io::stdout(), cursor::MoveTo(0, y))?;
-
-                // Highlight selected note
-                if i == app.selected_note_index {
-                    execute!(
-                        io::stdout(),
-                        SetBackgroundColor(Color::Rgb { r: 60, g: 60, b: 100 }),
-                        SetForegroundColor(Color::Rgb { r: 255, g: 255, b: 255 }),
-                    )?;
-                } else {
-                    execute!(
-                        io::stdout(),
-                        SetBackgroundColor(Color::Black),
-                        SetForegroundColor(Color::Rgb { r: 200, g: 200, b: 200 }),
-                    )?;
-                }
-
-                // Format note line
-                let title = if note.title.width() > (width as usize - 4) {
-                    format!("{}...", &note.title.chars().take(width as usize - 7).collect::<String>())
-                } else {
-                    note.title.clone()
-                };
-
-                print!(" {:<width$}", title, width = width as usize - 1);
-            }
-
-            // Clear remaining lines
-            for i in notes.len()..display_height as usize {
-                let y = start_y + 1 + i as u16;
-                execute!(
-                    io::stdout(),
-                    cursor::MoveTo(0, y),
-                    SetBackgroundColor(Color::Black),
-                )?;
-                print!("{:width$}", "", width = width as usize);
-            }
+        // Clear remaining lines
+        for i in app.filtered_notes.len()..display_height as usize {
+            let y = start_y + 1 + i as u16;
+            execute!(
+                io::stdout(),
+                cursor::MoveTo(0, y),
+                SetBackgroundColor(Color::Black),
+            )?;
+            print!("{:width$}", "", width = width as usize);
         }
 
 
@@ -255,13 +237,23 @@ impl UI {
         Ok(())
     }
 
-    fn render_editor(&self, app: &App, start_x: u16, width: u16, start_y: u16, height: u16) -> Result<()> {
-        // Render editor header
+    fn render_editor(&mut self, app: &App, start_x: u16, width: u16, start_y: u16, height: u16) -> Result<()> {
+        // Render editor header with focus indication
+        let is_focused = app.focus_area == FocusArea::Editor;
+
         execute!(
             io::stdout(),
             cursor::MoveTo(start_x, start_y),
-            SetBackgroundColor(Color::Rgb { r: 30, g: 30, b: 30 }),
-            SetForegroundColor(Color::Rgb { r: 150, g: 150, b: 150 }),
+            SetBackgroundColor(if is_focused {
+                Color::Rgb { r: 40, g: 50, b: 70 }  // Darker blue when focused
+            } else {
+                Color::Rgb { r: 30, g: 30, b: 30 }
+            }),
+            SetForegroundColor(if is_focused {
+                Color::Rgb { r: 200, g: 200, b: 200 }
+            } else {
+                Color::Rgb { r: 150, g: 150, b: 150 }
+            }),
         )?;
 
         let editor_header = if let Some(ref note) = app.selected_note {
@@ -272,99 +264,50 @@ impl UI {
 
         print!("{:width$}", editor_header, width = width as usize);
 
-        // Render editor content
-        execute!(
-            io::stdout(),
-            SetBackgroundColor(Color::Black),
-            SetForegroundColor(Color::Rgb { r: 200, g: 200, b: 200 }),
-        )?;
-
+        // Use the EditPanelRenderer for exact chonker7 rendering
         if let Some(ref _note) = app.selected_note {
-            // Get visible lines from editor
-            let visible_lines = app.editor.get_visible_lines(height as usize - 1);
-            let (cursor_row, cursor_col) = app.editor.get_cursor_screen_position();
+            // Update renderer size if needed
+            self.edit_renderer.resize(width, height - 1);
 
-            for (i, line) in visible_lines.iter().enumerate() {
-                if i >= height as usize - 1 {
-                    break;
-                }
+            // Update content from the rope
+            self.edit_renderer.update_from_rope(&app.editor.rope);
 
-                let y = start_y + 1 + i as u16;
-                execute!(io::stdout(), cursor::MoveTo(start_x, y))?;
+            // Get cursor position - use the virtual cursor position from the editor
+            let cursor_line = app.editor.cursor_pos.row;
+            let cursor_col = app.editor.cursor_pos.col;
 
-                // For now, render without code highlights (will add later)
-                // Show cursor position
-                if app.mode == AppMode::NoteEdit && i == cursor_row {
-                    // Render line with cursor
-                    print!(" ");
-                    for (j, ch) in line.chars().enumerate() {
-                        if j == cursor_col {
-                            execute!(
-                                io::stdout(),
-                                SetBackgroundColor(Color::Rgb { r: 100, g: 100, b: 100 }),
-                                SetForegroundColor(Color::Rgb { r: 255, g: 255, b: 255 }),
-                            )?;
-                            print!("{}", ch);
-                            execute!(
-                                io::stdout(),
-                                SetBackgroundColor(Color::Black),
-                                SetForegroundColor(Color::Rgb { r: 200, g: 200, b: 200 }),
-                            )?;
-                        } else {
-                            print!("{}", ch);
-                        }
-                    }
-                    // Show cursor at end of line if needed
-                    if cursor_col >= line.len() {
-                        execute!(
-                            io::stdout(),
-                            SetBackgroundColor(Color::Rgb { r: 100, g: 100, b: 100 }),
-                        )?;
-                        print!(" ");
-                        execute!(
-                            io::stdout(),
-                            SetBackgroundColor(Color::Black),
-                        )?;
-                    }
-                    // Fill rest of line
-                    let printed = 1 + line.width() + if cursor_col >= line.len() { 1 } else { 0 };
-                    if printed < width as usize {
-                        print!("{:width$}", "", width = width as usize - printed);
-                    }
-                } else {
-                    // Regular line rendering
-                    print!(" {:<width$}", line, width = width as usize - 1);
-                }
+            // Make cursor follow viewport
+            self.edit_renderer.follow_cursor(cursor_col, cursor_line, 3);
 
-            }
+            // Don't pass any selection bounds - we only want block selections and cursor
+            let (sel_start, sel_end) = (None, None);
 
-            // Clear remaining lines
-            for i in visible_lines.len()..height as usize - 1 {
-                let y = start_y + 1 + i as u16;
-                execute!(io::stdout(), cursor::MoveTo(start_x, y))?;
-                print!("{:width$}", "", width = width as usize);
-            }
+            // Render with cursor and selection using exact chonker7 colors (RGB 80,80,200)
+            // Use block selection renderer if block selection is active
+            self.edit_renderer.render_with_cursor_and_block_selection(
+                start_x, start_y + 1, width, height - 1,
+                (cursor_col, cursor_line),
+                app.editor.block_selection.as_ref(),
+                sel_start,
+                sel_end
+            )?;
         } else {
-            // No note selected - show placeholder
-            for i in 0..height - 1 {
-                let y = start_y + 1 + i;
-                execute!(io::stdout(), cursor::MoveTo(start_x, y))?;
+            // No note selected - clear the editor area
+            execute!(
+                io::stdout(),
+                SetBackgroundColor(Color::Black),
+                SetForegroundColor(Color::Rgb { r: 100, g: 100, b: 100 }),
+            )?;
 
-                if i == height / 2 - 1 {
-                    let msg = "Select or create a note to begin editing";
-                    let padding = (width as usize - msg.len()) / 2;
-                    print!("{:padding$}{}{:padding$}", "", msg, "",
-                           padding = padding);
-                } else {
-                    print!("{:width$}", "", width = width as usize);
-                }
+            for i in 0..height - 1 {
+                execute!(io::stdout(), cursor::MoveTo(start_x, start_y + 1 + i))?;
+                print!("{:width$}", "", width = width as usize);
             }
         }
 
         execute!(io::stdout(), style::ResetColor)?;
         Ok(())
     }
-
     fn render_status_bar(&self, app: &App, width: u16, height: u16) -> Result<()> {
         execute!(
             io::stdout(),
@@ -375,12 +318,10 @@ impl UI {
 
         let left_status = format!(" {} ", app.status_message);
 
-        let shortcuts = match app.mode {
-            AppMode::Search => "ESC: Cancel | Enter: Search",
-            AppMode::NoteList => "^Q: Quit | ^N: New | ^F: Search | ^D: Delete | ^</>: Resize | Enter: Edit",
-            AppMode::NoteEdit => "ESC: Back | ^S: Save | ^H: Highlight | ^</>: Resize",
-            AppMode::CodeManager => "ESC: Back | N: New Code",
-            AppMode::Highlighting => "ESC: Cancel | Enter: Apply Code",
+        let shortcuts = match app.focus_area {
+            FocusArea::SearchBar => "ESC/Enter/↓: Exit Search | Type to filter notes",
+            FocusArea::NoteList => "^Q: Quit | ^N: New | ^L/^F: Search | Enter/→: Edit | ^D: Delete | Tab: Switch Focus",
+            FocusArea::Editor => "ESC/←: Back to List | ^X: Cut | ^C: Copy | ^V: Paste | ^A: Select All | Tab: Switch Focus",
         };
 
         let right_status = format!(" {} ", shortcuts);
