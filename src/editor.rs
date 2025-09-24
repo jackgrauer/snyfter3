@@ -687,18 +687,21 @@ impl TextEditor {
         // Now set the cursor to the target position
         let line = target_row.min(self.rope.len_lines().saturating_sub(1));
         let line_start = self.rope.line_to_char(line);
-        let _line_end = if line < self.rope.len_lines() - 1 {
-            self.rope.line_to_char(line + 1).saturating_sub(1) // Exclude the newline
+        let line_slice = self.rope.line(line);
+        let line_len_raw = line_slice.len_chars();
+
+        // Exclude newline from line length
+        let line_len = if line_len_raw > 0 && line_slice.char(line_len_raw - 1) == '\n' {
+            line_len_raw - 1
         } else {
-            self.rope.len_chars()
+            line_len_raw
         };
 
-        // Allow cursor to be placed anywhere on the line, even past its end (virtual space)
-        // We don't actually insert spaces, just set the cursor position virtually
-        let char_pos = line_start + col.min(self.rope.line(line).len_chars());
+        // Position the cursor, limiting to actual line content (no virtual space in selection)
+        let char_pos = line_start + col.min(line_len);
         self.selection = Selection::single(char_pos, char_pos);
 
-        // Update cursor position to support virtual columns
+        // But store the visual cursor position for display and paste purposes
         self.cursor_pos = Position::new(line, col);
 
         // Set virtual cursor column for vertical movement
@@ -1063,9 +1066,64 @@ impl TextEditor {
 
     fn paste(&mut self) -> Result<bool> {
         if let Ok(clipboard_text) = self.paste_from_clipboard() {
-            // Get the current cursor position from the selection (which is always up to date)
-            let text = self.rope.slice(..);
-            let cursor_char_pos = self.selection.primary().cursor(text);
+            // Use cursor_pos which tracks the visual position
+            let line = self.cursor_pos.row;
+            let col = self.cursor_pos.col;
+
+            eprintln!("DEBUG PASTE: cursor_pos row={} col={}", line, col);
+            eprintln!("DEBUG PASTE: selection={:?}", self.selection.primary());
+
+            // Ensure we have the line
+            if line >= self.rope.len_lines() {
+                // Add lines if needed
+                let lines_to_add = line + 1 - self.rope.len_lines();
+                for _ in 0..lines_to_add {
+                    self.rope.insert_char(self.rope.len_chars(), '\n');
+                }
+            }
+
+            // Get line info
+            let line_slice = self.rope.line(line);
+            let line_len_raw = line_slice.len_chars();
+            let line_len = if line_len_raw > 0 && line_slice.char(line_len_raw - 1) == '\n' {
+                line_len_raw - 1
+            } else {
+                line_len_raw
+            };
+
+            // Pad with spaces if clicking past end of line
+            if col > line_len {
+                let spaces_needed = col - line_len;
+                let line_start = self.rope.line_to_char(line);
+                let insert_pos = line_start + line_len;
+
+                eprintln!("DEBUG PASTE: Padding {} spaces at char pos {}", spaces_needed, insert_pos);
+
+                // Convert to string, insert spaces, convert back
+                let mut text_str = self.rope.to_string();
+                let mut byte_pos = 0;
+                let mut char_count = 0;
+                for ch in text_str.chars() {
+                    if char_count >= insert_pos {
+                        break;
+                    }
+                    byte_pos += ch.len_utf8();
+                    char_count += 1;
+                }
+
+                for _ in 0..spaces_needed {
+                    text_str.insert(byte_pos, ' ');
+                    byte_pos += 1;
+                }
+
+                self.rope = Rope::from_str(&text_str);
+            }
+
+            // Now paste at the correct position
+            let line_start = self.rope.line_to_char(line);
+            let cursor_char_pos = line_start + col;
+
+            eprintln!("DEBUG PASTE: Inserting at char position {}", cursor_char_pos);
 
             // Handle block selection paste
             if let Some(ref block_sel) = self.block_selection {
@@ -1149,16 +1207,18 @@ impl TextEditor {
 
                 self.rope = Rope::from_str(&new_text);
 
-                // Calculate new cursor position in chars
+                // Calculate new cursor position
                 let new_char_pos = cursor_char_pos + clipboard_text.chars().count();
                 self.selection = Selection::point(new_char_pos);
 
                 // Update cursor_pos to match
                 let text = self.rope.slice(..);
-                let line = text.char_to_line(new_char_pos);
-                let line_start = text.line_to_char(line);
-                let col = new_char_pos - line_start;
-                self.cursor_pos = Position::new(line, col);
+                let new_line = text.char_to_line(new_char_pos);
+                let new_line_start = text.line_to_char(new_line);
+                let new_col = new_char_pos - new_line_start;
+                self.cursor_pos = Position::new(new_line, new_col);
+
+                eprintln!("DEBUG PASTE: New cursor position row={} col={}", new_line, new_col);
             }
 
             return Ok(true);
